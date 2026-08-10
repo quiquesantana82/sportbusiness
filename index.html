@@ -22,6 +22,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 :root {
   --bg: #070809;
@@ -1049,6 +1050,38 @@ body {
   margin-bottom: 10px;
 }
 
+#wyscout-drop.drag { border-color: var(--accent); background: rgba(123,192,12,0.06); }
+
+/* ─── CANCHA / STATS WYSCOUT ─── */
+.pitch-wrap { display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin:6px 0 14px; }
+.pitch {
+  position: relative; width: 150px; height: 210px; flex-shrink:0;
+  background: linear-gradient(160deg,#0d2818,#0a1f13);
+  border: 2px solid rgba(123,192,12,0.4); border-radius: 8px;
+}
+.pitch::before, .pitch::after { content:''; position:absolute; left:0; right:0; }
+.pitch::before { top:50%; height:1px; background:rgba(255,255,255,0.15); }
+.pitch-circle { position:absolute; top:50%; left:50%; width:44px; height:44px; margin:-22px 0 0 -22px; border:1px solid rgba(255,255,255,0.15); border-radius:50%; }
+.pitch-box { position:absolute; left:50%; width:70px; height:34px; margin-left:-35px; border:1px solid rgba(255,255,255,0.15); }
+.pitch-box.top { top:0; border-top:none; }
+.pitch-box.bot { bottom:0; border-bottom:none; }
+.pitch-zone {
+  position:absolute; width:34px; height:34px; margin:-17px 0 0 -17px;
+  border-radius:50%; background:rgba(123,192,12,0.85);
+  display:flex; align-items:center; justify-content:center;
+  font-family:'Barlow Condensed',sans-serif; font-weight:800; font-size:10px; color:#08110a;
+  box-shadow:0 0 12px rgba(123,192,12,0.5); border:1px solid rgba(255,255,255,0.3);
+}
+.pitch-zone.secondary { background:rgba(123,192,12,0.4); box-shadow:none; }
+.pitch-legend { font-size:11px; line-height:1.7; color:var(--muted2); }
+.pitch-legend b { color:var(--accent-light); font-weight:600; }
+.stat-bar-row { margin-bottom:10px; }
+.stat-bar-head { display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px; }
+.stat-bar-head .lbl { color:var(--muted2); }
+.stat-bar-head .val { font-family:'Barlow Condensed',sans-serif; font-weight:800; font-size:15px; color:var(--text); }
+.stat-bar-track { height:6px; background:var(--surface); border-radius:4px; overflow:hidden; }
+.stat-bar-fill { height:100%; border-radius:4px; }
+
 /* ─── LOGIN CARD ─── */
 .login-card {
   background: var(--surface);
@@ -1539,6 +1572,21 @@ body {
         <p style="font-size:11px;color:var(--muted);margin-top:6px;">Si el jugador queda vinculado, sus partidos, goles, asistencias y demás stats se actualizan solos lunes y viernes. Las temporadas tipo 2025/2026 son las europeas. El ID de FotMob está en la URL del jugador: fotmob.com/es/players/<b>1204561</b>/nombre.</p>
       </div>
 
+      <div class="stats-input-group" style="border-color:var(--accent);">
+        <div class="stats-input-group-title" style="color:var(--accent-light);">📊 Estadísticas por Excel (Wyscout)</div>
+        <div id="wyscout-drop" onclick="document.getElementById('wyscout-file').click()"
+             ondragover="event.preventDefault();this.classList.add('drag')"
+             ondragleave="this.classList.remove('drag')"
+             ondrop="wyscoutDrop(event)"
+             style="border:2px dashed var(--border);border-radius:10px;padding:22px 14px;text-align:center;cursor:pointer;transition:.15s;">
+          <div style="font-size:26px;margin-bottom:6px;">📄</div>
+          <div style="font-size:13px;color:var(--text);">Arrastrá el Excel de Wyscout o tocá para elegirlo</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;">Trae todas las temporadas juntas · pisa los datos de API-Football</div>
+          <input type="file" id="wyscout-file" accept=".xlsx,.xls" style="display:none;" onchange="wyscoutPick(this.files[0])">
+        </div>
+        <div id="wyscout-preview" style="margin-top:12px;"></div>
+      </div>
+
       <div class="stats-input-group">
         <div class="stats-input-group-title">Estadísticas principales (temporada actual)</div>
         <div class="form-row">
@@ -1681,6 +1729,7 @@ function rowToPlayer(r) {
     fotmobId: r.fotmob_id || '',
     statsSource: r.stats_source || '',
     stats: r.stats || null,
+    statsZonas: r.stats_zonas || null,
     statsUpdatedAt: r.stats_updated_at || null,
   };
 }
@@ -1826,11 +1875,81 @@ async function renderGrid() {
   `).join('');
 }
 
-// ─── STATS AUTOMÁTICAS (API-Football) ───
+// ─── STATS AUTOMÁTICAS (API-Football / Wyscout) ───
 let _fichaTemporadas = [];
 let _fichaEsArquero = false;
 
+// Mapa posiciones y coords para la cancha en la ficha pública
+const POS_ES_FICHA = {
+  GK:'Arquero', RB:'Lateral derecho', LB:'Lateral izquierdo', CB:'Defensa central',
+  RCB:'Defensa central', LCB:'Defensa central', RWB:'Carrilero derecho', LWB:'Carrilero izquierdo',
+  DMF:'Volante de contención', RDMF:'Volante de contención', LDMF:'Volante de contención',
+  CMF:'Mediocampista central', RCMF:'Mediocampista por derecha', LCMF:'Mediocampista por izquierda',
+  AMF:'Enganche', RAMF:'Volante ofensivo por derecha', LAMF:'Volante ofensivo por izquierda',
+  RW:'Extremo derecho', LW:'Extremo izquierdo', RWF:'Extremo derecho', LWF:'Extremo izquierdo',
+  CF:'Centrodelantero', SS:'Segundo delantero'
+};
+const POS_XY_FICHA = {
+  GK:[50,90], CB:[50,74], RCB:[65,74], LCB:[35,74], RB:[82,68], LB:[18,68],
+  RWB:[85,52], LWB:[15,52], DMF:[50,60], RDMF:[62,60], LDMF:[38,60],
+  CMF:[50,46], RCMF:[65,46], LCMF:[35,46], AMF:[50,34], RAMF:[68,34], LAMF:[32,34],
+  RW:[82,26], LW:[18,26], RWF:[80,22], LWF:[20,22], CF:[50,16], SS:[50,26]
+};
+function pitchHTMLFicha(zonas, princ){
+  const marks = zonas.filter(z=>POS_XY_FICHA[z]).map(z=>{
+    const [x,y]=POS_XY_FICHA[z]; const main = z===princ;
+    return `<div class="pitch-zone${main?'':' secondary'}" style="left:${x}%;top:${y}%;" title="${POS_ES_FICHA[z]||z}">${z}</div>`;
+  }).join('');
+  return `<div class="pitch"><div class="pitch-circle"></div><div class="pitch-box top"></div><div class="pitch-box bot"></div>${marks}</div>`;
+}
+
+// Barra de stat con color por umbral (verde bueno / neutro / naranja bajo)
+function statBar(label, valTxt, pct){
+  let color = 'var(--accent)';           // neutro
+  if (pct !== null && pct !== undefined) {
+    if (pct >= 60) color = 'var(--accent-light)';      // bueno → verde claro
+    else if (pct < 40) color = '#c99a3a';              // bajo → ámbar (nunca rojo)
+  }
+  const width = (pct===null||pct===undefined) ? 0 : Math.max(4, Math.min(100, pct));
+  return `<div class="stat-bar-row">
+    <div class="stat-bar-head"><span class="lbl">${label}</span><span class="val">${valTxt}</span></div>
+    ${pct!==null&&pct!==undefined ? `<div class="stat-bar-track"><div class="stat-bar-fill" style="width:${width}%;background:${color};"></div></div>`:''}
+  </div>`;
+}
+
+// Detecta si la temporada viene de Wyscout (tiene los campos nuevos)
+function esWyscout(s){ return s && (s.fuente === 'Wyscout' || s.pct_paradas !== undefined || s._precision_pases_n !== undefined); }
+
+function wyscoutRowsHTML(s, esArquero){
+  const box = (label,val) => `<div class="stat-box"><div class="stat-val">${val}</div><div class="stat-label">${label}</div></div>`;
+  if (esArquero){
+    return `<div style="padding:14px;">
+      <div class="stats-grid" style="grid-template-columns:repeat(3,1fr);">
+        ${box('Partidos', s.partidos)}${box('Minutos', s.minutos)}${box('Atajadas', s.atajadas)}
+      </div>
+      ${statBar('% de paradas', s.pct_paradas, parseInt(s.pct_paradas)||null)}
+      ${statBar('Goles recibidos', s.goles_recibidos + ' · ' + s.gr_promedio + '/partido', null)}
+      ${s.xcg!==undefined ? statBar('Goles evitados (xCG)', (s.xcg - s.goles_recibidos>=0?'+':'')+(s.xcg - s.goles_recibidos).toFixed(1), null):''}
+      ${s.ligas ? `<div style="font-size:11px;color:var(--muted);margin-top:6px;">Competencias: ${s.ligas}</div>`:''}
+    </div>`;
+  }
+  return `<div style="padding:14px;">
+    <div class="stats-grid" style="grid-template-columns:repeat(4,1fr);">
+      ${box('PJ', s.partidos)}${box('Goles', s.goles)}${box('Asist', s.asistencias)}${box('Remates', s.remates)}
+    </div>
+    ${statBar('Precisión de pases', s.precision_pases, s._precision_pases_n)}
+    ${statBar('Duelos ganados', s.duelos_ganados, s._duelos_n)}
+    ${statBar('Duelos aéreos ganados', s.aereos_ganados, s._aereos_n)}
+    ${statBar('Regates (logrados/intentos)', s.regates, null)}
+    ${statBar('Intercepciones', s.intercepciones, null)}
+    ${statBar('Centros precisos', s.centros, null)}
+    ${s.xg!==undefined ? statBar('Goles esperados (xG)', s.xg, null):''}
+    ${(s.amarillas||s.rojas) ? `<div style="font-size:11px;color:var(--muted);margin-top:6px;">🟨 ${s.amarillas} · 🟥 ${s.rojas}${s.ligas?' · '+s.ligas:''}</div>`:''}
+  </div>`;
+}
+
 function apiStatsRowsHTML(s, esArquero) {
+  if (esWyscout(s)) return wyscoutRowsHTML(s, esArquero);
   const row = (label, val) => (val === null || val === undefined || val === '')
     ? ''
     : `<div class="data-row"><span class="data-label">${label}</span><span class="data-val">${val}</span></div>`;
@@ -1873,6 +1992,19 @@ function renderApiStats(p) {
   const rows = apiStatsRowsHTML(temporadas[0], _fichaEsArquero);
   if (!rows) return '';
 
+  // Cancha con zonas cubiertas (solo Wyscout)
+  let canchaHTML = '';
+  if (esWyscout(temporadas[0]) && Array.isArray(p.statsZonas) && p.statsZonas.length){
+    const princ = p.statsZonas[0];
+    canchaHTML = `<div class="pitch-wrap" style="padding:14px 14px 0;">
+      ${pitchHTMLFicha(p.statsZonas, princ)}
+      <div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">Posiciones cubiertas</div>
+        <div class="pitch-legend">${p.statsZonas.map(z=>`<div><b>${z}</b> · ${(POS_ES_FICHA[z]||z)}</div>`).join('')}</div>
+      </div>
+    </div>`;
+  }
+
   const fecha = p.statsUpdatedAt ? new Date(p.statsUpdatedAt).toLocaleDateString('es-UY', { day: 'numeric', month: 'short' }) : '';
 
   const selector = temporadas.length > 1
@@ -1887,6 +2019,7 @@ function renderApiStats(p) {
         <span>Estadísticas Temporada</span>
         ${selector}
       </div>
+      ${canchaHTML}
       <div id="api-stats-rows">${rows}</div>
       ${fecha ? `<div style="padding:8px 14px;font-size:10px;color:var(--muted);text-align:right;">Actualizado ${fecha} · Fuente: ${temporadas[0].fuente || 'API-Football'}</div>` : ''}
     </div>`;
@@ -2255,6 +2388,195 @@ function clearForm() {
   document.getElementById('seleccion-detail').style.display = 'none';
   document.getElementById('edit-id').value = '';
   document.getElementById('cancel-edit-btn').style.display = 'none';
+}
+
+// ═══════════════ CARGADOR DE STATS WYSCOUT (EXCEL) ═══════════════
+const POS_ES = {
+  GK:'Arquero', RB:'Lateral derecho', LB:'Lateral izquierdo', CB:'Defensa central',
+  RCB:'Defensa central', LCB:'Defensa central', RWB:'Carrilero derecho', LWB:'Carrilero izquierdo',
+  DMF:'Volante de contención', RDMF:'Volante de contención', LDMF:'Volante de contención',
+  CMF:'Mediocampista central', RCMF:'Mediocampista por derecha', LCMF:'Mediocampista por izquierda',
+  AMF:'Enganche', RAMF:'Volante ofensivo por derecha', LAMF:'Volante ofensivo por izquierda',
+  RW:'Extremo derecho', LW:'Extremo izquierdo', RWF:'Extremo derecho', LWF:'Extremo izquierdo',
+  CF:'Centrodelantero', SS:'Segundo delantero'
+};
+// coordenadas (%) sobre la cancha (arco propio abajo)
+const POS_XY = {
+  GK:[50,90], CB:[50,74], RCB:[65,74], LCB:[35,74], RB:[82,68], LB:[18,68],
+  RWB:[85,52], LWB:[15,52], DMF:[50,60], RDMF:[62,60], LDMF:[38,60],
+  CMF:[50,46], RCMF:[65,46], LCMF:[35,46], AMF:[50,34], RAMF:[68,34], LAMF:[32,34],
+  RW:[82,26], LW:[18,26], RWF:[80,22], LWF:[20,22], CF:[50,16], SS:[50,26]
+};
+function perfilDe(cod){
+  if(cod==='GK') return 'arquero';
+  if(['RB','LB','CB','RCB','LCB','RWB','LWB'].includes(cod)) return 'defensor';
+  if(['DMF','RDMF','LDMF','CMF','RCMF','LCMF','AMF','RAMF','LAMF'].includes(cod)) return 'medio';
+  return 'delantero';
+}
+const _n = v => { const x = parseFloat(v); return isNaN(x) ? 0 : x; };
+
+let _wyscoutStats = null; // resultado listo para guardar
+
+function wyscoutDrop(e){
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag');
+  const f = e.dataTransfer.files[0];
+  if (f) wyscoutPick(f);
+}
+function wyscoutPick(file){
+  if (!file) return;
+  const editId = document.getElementById('edit-id').value;
+  if (editId === '') {
+    document.getElementById('wyscout-preview').innerHTML =
+      '<div style="color:var(--danger);font-size:12px;">⚠️ Primero abrí un jugador para editar (desde la lista), después subí su Excel.</div>';
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try { procesarWyscout(new Uint8Array(ev.target.result)); }
+    catch(err){
+      console.error(err);
+      document.getElementById('wyscout-preview').innerHTML =
+        '<div style="color:var(--danger);font-size:12px;">❌ No se pudo leer el Excel. ¿Es un export de Wyscout?</div>';
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function procesarWyscout(bytes){
+  const wb = XLSX.read(bytes, { type:'array' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:'' });
+  const data = rows.slice(1).filter(r => r[0]); // filas con partido
+
+  // posición principal + zonas
+  const cont = {}; const zonas = new Set();
+  data.forEach(r => String(r[3]||'').split(',').forEach(t => {
+    t = t.trim(); if(t){ cont[t]=(cont[t]||0)+1; zonas.add(t); }
+  }));
+  const princ = Object.keys(cont).sort((a,b)=>cont[b]-cont[a])[0] || '';
+  const perfil = perfilDe(princ);
+
+  // agrupar por temporada (año de la fecha)
+  const grupos = {};
+  data.forEach(r => {
+    const fecha = String(r[2]||''); const anio = fecha.length>=4 ? fecha.slice(0,4) : 'S/D';
+    (grupos[anio] = grupos[anio] || []).push(r);
+  });
+
+  const temporadas = Object.keys(grupos).sort().reverse().map(anio => {
+    const rs = grupos[anio];
+    const pj = rs.length, mins = rs.reduce((a,r)=>a+_n(r[4]),0);
+    const comps = [...new Set(rs.map(r=>String(r[1])).filter(Boolean))]
+      .map(c => c.split('.').pop().trim());
+    const base = { temporada: anio, temporada_label: anio, partidos: pj, minutos: Math.round(mins),
+                   ligas: comps.join(', '), fuente:'Wyscout' };
+    if (perfil === 'arquero') {
+      const gr=sum(rs,5), rem=sum(rs,7), par=sum(rs,8), xcg=sum(rs,6);
+      Object.assign(base, {
+        goles_recibidos: Math.round(gr),
+        gr_promedio: (gr/pj).toFixed(2),
+        atajadas: Math.round(par),
+        pct_paradas: rem? Math.round(100*par/rem)+'%' : '—',
+        xcg: xcg.toFixed(1)
+      });
+    } else {
+      const goles=sum(rs,7), asis=sum(rs,8), tiros=sum(rs,9), xg=sum(rs,11),
+            pases=sum(rs,12), pasesok=sum(rs,13), duelos=sum(rs,20), duelosg=sum(rs,21),
+            aereos=sum(rs,22), aereosg=sum(rs,23), reg=sum(rs,18), regok=sum(rs,19),
+            inter=sum(rs,24), cen=sum(rs,16), cenok=sum(rs,17), am=sum(rs,29), ro=sum(rs,30);
+      Object.assign(base, {
+        goles: Math.round(goles), asistencias: Math.round(asis),
+        goles_prom: pj? (goles/pj).toFixed(2):'0',
+        remates: Math.round(tiros), xg: xg.toFixed(1),
+        precision_pases: pases? Math.round(100*pasesok/pases)+'%':'—',
+        _precision_pases_n: pases? Math.round(100*pasesok/pases):0,
+        duelos_ganados: duelos? Math.round(100*duelosg/duelos)+'%':'—',
+        _duelos_n: duelos? Math.round(100*duelosg/duelos):0,
+        aereos_ganados: aereos? Math.round(100*aereosg/aereos)+'%':'—',
+        _aereos_n: aereos? Math.round(100*aereosg/aereos):0,
+        regates: Math.round(regok)+'/'+Math.round(reg),
+        intercepciones: Math.round(inter),
+        centros: Math.round(cenok)+'/'+Math.round(cen),
+        amarillas: Math.round(am), rojas: Math.round(ro)
+      });
+    }
+    return base;
+  });
+
+  _wyscoutStats = {
+    posicion_es: POS_ES[princ] || princ,
+    posicion_cod: princ,
+    perfil,
+    zonas: [...zonas],
+    temporadas
+  };
+  renderWyscoutPreview();
+}
+function sum(rows, col){ return rows.reduce((a,r)=>a+_n(r[col]),0); }
+
+function pitchHTML(zonas, princ){
+  const marks = zonas.filter(z=>POS_XY[z]).map(z=>{
+    const [x,y]=POS_XY[z]; const main = z===princ;
+    return `<div class="pitch-zone${main?'':' secondary'}" style="left:${x}%;top:${y}%;" title="${POS_ES[z]||z}">${z}</div>`;
+  }).join('');
+  return `<div class="pitch">
+    <div class="pitch-circle"></div>
+    <div class="pitch-box top"></div>
+    <div class="pitch-box bot"></div>
+    ${marks}
+  </div>`;
+}
+
+function renderWyscoutPreview(){
+  const w = _wyscoutStats;
+  const t0 = w.temporadas[0];
+  const legend = w.zonas.map(z=>`<div><b>${z}</b> · ${POS_ES[z]||z}</div>`).join('');
+  const filas = w.perfil==='arquero'
+    ? [['Partidos',t0.partidos],['Minutos',t0.minutos],['Goles recibidos',t0.goles_recibidos+' ('+t0.gr_promedio+'/p)'],
+       ['Atajadas',t0.atajadas],['% Paradas',t0.pct_paradas],['xCG',t0.xcg]]
+    : [['Partidos',t0.partidos],['Minutos',t0.minutos],['Goles',t0.goles],['Asistencias',t0.asistencias],
+       ['Precisión pases',t0.precision_pases],['Duelos ganados',t0.duelos_ganados],
+       ['Aéreos ganados',t0.aereos_ganados],['Regates',t0.regates],['Intercepciones',t0.intercepciones]];
+  document.getElementById('wyscout-preview').innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--accent);border-radius:10px;padding:14px;">
+      <div style="font-size:13px;margin-bottom:4px;"><b style="color:var(--accent-light);">${w.posicion_es}</b>
+        <span style="color:var(--muted);font-size:11px;"> · perfil ${w.perfil} · ${w.temporadas.length} temporada(s)</span></div>
+      <div class="pitch-wrap">
+        ${pitchHTML(w.zonas, w.posicion_cod)}
+        <div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">Zonas cubiertas (todas las temporadas):</div>
+          <div class="pitch-legend">${legend}</div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin:8px 0 4px;">Temporada ${t0.temporada} · ${t0.ligas}</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
+        ${filas.map(([l,v])=>`<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px;text-align:center;">
+          <div style="font-family:'Barlow Condensed';font-weight:800;font-size:20px;color:var(--accent-light);line-height:1;">${v}</div>
+          <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:3px;">${l}</div></div>`).join('')}
+      </div>
+      <button type="button" class="btn-primary" style="margin-top:12px;" onclick="guardarWyscout(this)">💾 Guardar estas estadísticas</button>
+    </div>`;
+}
+
+async function guardarWyscout(btn){
+  const editId = document.getElementById('edit-id').value;
+  if (editId==='' || !_wyscoutStats){ showToast('⚠️ Abrí un jugador y subí su Excel primero'); return; }
+  btn.disabled = true; btn.textContent = 'Guardando…';
+  const payload = {
+    stats: _wyscoutStats.temporadas,
+    stats_source: 'wyscout',
+    stats_updated_at: new Date().toISOString(),
+    posicion: _wyscoutStats.posicion_es,
+    stats_zonas: _wyscoutStats.zonas
+  };
+  const { error } = await sb.from('players').update(payload).eq('id', editId);
+  if (error){ console.error(error); showToast('❌ Error al guardar: '+error.message); btn.disabled=false; btn.textContent='💾 Guardar estas estadísticas'; return; }
+  document.getElementById('f-posicion').value = _wyscoutStats.posicion_es;
+  showToast('✅ Stats de Wyscout guardadas (pisaron API-Football)');
+  _wyscoutStats = null;
+  document.getElementById('wyscout-preview').innerHTML = '<div style="color:var(--accent-light);font-size:12px;">✓ Guardado. Recargá la ficha para verlo.</div>';
+  await renderAdminPlayers();
 }
 
 async function savePlayer() {
