@@ -2450,12 +2450,19 @@ function procesarWyscout(bytes){
   const data = rows.slice(1).filter(r => r[0]); // filas con partido
 
   // posición principal + zonas
-  const cont = {}; const zonas = new Set();
+  const cont = {};
   data.forEach(r => String(r[3]||'').split(',').forEach(t => {
-    t = t.trim(); if(t){ cont[t]=(cont[t]||0)+1; zonas.add(t); }
+    t = t.trim(); if(t){ cont[t]=(cont[t]||0)+1; }
   }));
   const princ = Object.keys(cont).sort((a,b)=>cont[b]-cont[a])[0] || '';
   const perfil = perfilDe(princ);
+
+  // Zonas para la cancha: solo las 4 posiciones más jugadas que sean válidas
+  // (descarta subtipos de Wyscout como RB5, RCB3, RCMF3 que no son posiciones reales)
+  const zonas = Object.keys(cont)
+    .filter(c => POS_XY[c])
+    .sort((a,b)=>cont[b]-cont[a])
+    .slice(0,4);
 
   // agrupar por temporada (año de la fecha)
   const grupos = {};
@@ -2508,7 +2515,7 @@ function procesarWyscout(bytes){
     posicion_es: POS_ES[princ] || princ,
     posicion_cod: princ,
     perfil,
-    zonas: [...zonas],
+    zonas: zonas,
     temporadas
   };
   renderWyscoutPreview();
