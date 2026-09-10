@@ -6,7 +6,22 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 
 export default async (req) => {
   const url = new URL(req.url);
-  const id = (url.searchParams.get('id') || '').replace(/[^\w-]/g, '');
+
+  // El ID viene en el PATH: /jugador/<ID>  (no en ?id=)
+  // 1) intento sacarlo del path, 2) fallback a ?id=, 3) fallback al último segmento
+  let raw = '';
+  const m = url.pathname.match(/\/jugador\/([^/?#]+)/i);
+  if (m) {
+    raw = m[1];
+  } else if (url.searchParams.get('id')) {
+    raw = url.searchParams.get('id');
+  } else {
+    const parts = url.pathname.split('/').filter(Boolean);
+    const last = parts[parts.length - 1] || '';
+    if (last && last.toLowerCase() !== 'jugador') raw = last;
+  }
+  const id = decodeURIComponent(raw).replace(/[^\w-]/g, '');
+
   let j = null;
 
   if (id) {
@@ -57,5 +72,8 @@ ${foto ? `<meta property="og:image" content="${esc(foto)}">
 
   return new Response(html, {
     headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=300' }
+  });
+};
+
   });
 };
