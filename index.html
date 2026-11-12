@@ -2615,6 +2615,7 @@ function renderWyscoutPreview(){
           <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:3px;">${l}</div></div>`).join('')}
       </div>
       <button type="button" class="btn-primary" style="margin-top:12px;" onclick="guardarWyscout(this)">💾 Guardar estas estadísticas</button>
+      <div style="font-size:11px;color:var(--muted);margin-top:8px;">Después de guardar, acá abajo aparece el ajuste manual para sumar goles o partidos de torneos que el Excel no trae.</div>
     </div>`;
 }
 
@@ -2852,7 +2853,7 @@ async function renderAdminPlayers() {
     <div class="admin-player-item">
       <div>
         <div class="admin-player-name">${p.nombre} ${p.apiFootballId ? '<span style="color:var(--success);font-size:11px;">🔗 API</span>' : ''}</div>
-        <div class="admin-player-meta">${p.posicion || ''} · ${p.club || ''}${p.stats ? (()=>{const s=Array.isArray(p.stats)?p.stats[0]:p.stats; s=conExtra(s); return s ? ' · ' + (s.partidos || 0) + ' PJ / ' + (s.goles || 0) + ' G / ' + (s.asistencias || 0) + ' A' : '';})() : ''}</div>
+        <div class="admin-player-meta">${p.posicion || ''} · ${p.club || ''}${p.stats ? (()=>{const s=conExtra(Array.isArray(p.stats)?p.stats[0]:p.stats); return s ? ' · ' + (s.partidos || 0) + ' PJ / ' + (s.goles || 0) + ' G / ' + (s.asistencias || 0) + ' A' : '';})() : ''}</div>
       </div>
       <div class="admin-btn-group">
         <button class="btn-edit" onclick="editPlayer(${i})">✏️ Editar</button>
