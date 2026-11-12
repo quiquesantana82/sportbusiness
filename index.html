@@ -1585,6 +1585,7 @@ body {
           <input type="file" id="wyscout-file" accept=".xlsx,.xls" style="display:none;" onchange="wyscoutPick(this.files[0])">
         </div>
         <div id="wyscout-preview" style="margin-top:12px;"></div>
+        <div id="ajuste-manual" style="margin-top:12px;"></div>
       </div>
 
       <div class="stats-input-group">
@@ -1917,10 +1918,53 @@ function statBar(label, valTxt, pct){
   </div>`;
 }
 
+// Suma el ajuste manual (torneos que Wyscout no trae) a los números de la temporada
+function conExtra(s){
+  if (!s || !s.extra) return s;
+  const e = s.extra, n = v => parseInt(v) || 0;
+  if (!n(e.partidos) && !n(e.goles) && !n(e.asistencias)) return s;
+  const o = Object.assign({}, s);
+  o.partidos = n(s.partidos) + n(e.partidos);
+  if (s.goles !== undefined || n(e.goles)) o.goles = n(s.goles) + n(e.goles);
+  if (s.asistencias !== undefined || n(e.asistencias)) o.asistencias = n(s.asistencias) + n(e.asistencias);
+  if (e.nota) o.ligas = (s.ligas ? s.ligas + ', ' : '') + e.nota;
+  return o;
+}
+
+// Fila "Total carrera": suma todas las temporadas de Wyscout (incluye ajustes manuales)
+function totalCarrera(temporadas){
+  const ts = temporadas.map(conExtra), n = v => parseFloat(v) || 0;
+  const S = k => ts.reduce((a,t) => a + n(t[k]), 0);
+  const R = k => ts.reduce((a,t) => a + n(t._raw && t._raw[k]), 0);
+  const conRaw = ts.every(t => t._raw);
+  const pct = (ok,tot) => (conRaw && R(tot)) ? Math.round(100*R(ok)/R(tot)) : null;
+  const par = k => { let a=0,b=0; ts.forEach(t => { const m=String(t[k]||'').split('/'); a+=n(m[0]); b+=n(m[1]); }); return a+'/'+b; };
+  const anios = ts.map(t => parseInt(t.temporada)).filter(Boolean);
+  const ligas = [...new Set(ts.flatMap(t => String(t.ligas||'').split(',').map(x => x.trim()).filter(Boolean)))].join(', ');
+  const pj = S('partidos');
+  const o = { temporada:'total', fuente:'Wyscout', ligas, partidos: pj, minutos: S('minutos'),
+    temporada_label: 'Total' + (anios.length ? ' ' + Math.min(...anios) + '–' + Math.max(...anios) : '') };
+  if (ts[0].goles_recibidos !== undefined) {
+    const gr = S('goles_recibidos'), rem = R('rem');
+    Object.assign(o, { goles_recibidos: gr, gr_promedio: pj ? (gr/pj).toFixed(2) : '0', atajadas: S('atajadas'),
+      pct_paradas: (conRaw && rem) ? Math.round(100*S('atajadas')/rem)+'%' : '—', xcg: S('xcg').toFixed(1) });
+  } else {
+    const pp = pct('pasesok','pases'), pd = pct('duelosg','duelos'), pa = pct('aereosg','aereos');
+    Object.assign(o, { goles: S('goles'), asistencias: S('asistencias'), remates: S('remates'), xg: S('xg').toFixed(1),
+      precision_pases: pp===null ? '—' : pp+'%', _precision_pases_n: pp,
+      duelos_ganados: pd===null ? '—' : pd+'%', _duelos_n: pd,
+      aereos_ganados: pa===null ? '—' : pa+'%', _aereos_n: pa,
+      regates: par('regates'), centros: par('centros'), intercepciones: S('intercepciones'),
+      amarillas: S('amarillas'), rojas: S('rojas') });
+  }
+  return o;
+}
+
 // Detecta si la temporada viene de Wyscout (tiene los campos nuevos)
 function esWyscout(s){ return s && (s.fuente === 'Wyscout' || s.pct_paradas !== undefined || s._precision_pases_n !== undefined); }
 
 function wyscoutRowsHTML(s, esArquero){
+  s = conExtra(s);
   const box = (label,val) => `<div class="stat-box"><div class="stat-val">${val}</div><div class="stat-label">${label}</div></div>`;
   if (esArquero){
     return `<div style="padding:14px;">
@@ -1950,6 +1994,7 @@ function wyscoutRowsHTML(s, esArquero){
 
 function apiStatsRowsHTML(s, esArquero) {
   if (esWyscout(s)) return wyscoutRowsHTML(s, esArquero);
+  s = conExtra(s);
   const row = (label, val) => (val === null || val === undefined || val === '')
     ? ''
     : `<div class="data-row"><span class="data-label">${label}</span><span class="data-val">${val}</span></div>`;
@@ -1985,6 +2030,9 @@ function renderApiStats(p) {
   if (!Array.isArray(temporadas)) temporadas = [temporadas]; // compatibilidad con formato anterior
   temporadas = temporadas.filter(s => s && s.partidos !== undefined);
   if (!temporadas.length) return '';
+
+  // Con más de una temporada de Wyscout se agrega la opción "Total" al final del selector
+  if (temporadas.length > 1 && temporadas.every(esWyscout)) temporadas = temporadas.concat([totalCarrera(temporadas)]);
 
   _fichaTemporadas = temporadas;
   _fichaEsArquero = (p.posicion || '').toLowerCase().includes('portero') || (p.posicion || '').toLowerCase().includes('arquero');
@@ -2387,6 +2435,7 @@ function clearForm() {
   document.getElementById('f-seleccion').checked = false;
   document.getElementById('seleccion-detail').style.display = 'none';
   document.getElementById('edit-id').value = '';
+  renderAjusteManual(null);
   document.getElementById('cancel-edit-btn').style.display = 'none';
 }
 
@@ -2485,13 +2534,15 @@ function procesarWyscout(bytes){
         gr_promedio: (gr/pj).toFixed(2),
         atajadas: Math.round(par),
         pct_paradas: rem? Math.round(100*par/rem)+'%' : '—',
-        xcg: xcg.toFixed(1)
+        xcg: xcg.toFixed(1),
+        _raw: { rem }
       });
     } else {
       const goles=sum(rs,7), asis=sum(rs,8), tiros=sum(rs,9), xg=sum(rs,11),
             pases=sum(rs,12), pasesok=sum(rs,13), duelos=sum(rs,20), duelosg=sum(rs,21),
             aereos=sum(rs,22), aereosg=sum(rs,23), reg=sum(rs,18), regok=sum(rs,19),
-            inter=sum(rs,24), cen=sum(rs,16), cenok=sum(rs,17), am=sum(rs,29), ro=sum(rs,30);
+            inter=sum(rs,24), cen=sum(rs,16), cenok=sum(rs,17),
+            am=rs.filter(r=>_n(r[29])>0).length, ro=rs.filter(r=>_n(r[30])>0).length; // la celda trae el minuto de la tarjeta
       Object.assign(base, {
         goles: Math.round(goles), asistencias: Math.round(asis),
         goles_prom: pj? (goles/pj).toFixed(2):'0',
@@ -2505,7 +2556,8 @@ function procesarWyscout(bytes){
         regates: Math.round(regok)+'/'+Math.round(reg),
         intercepciones: Math.round(inter),
         centros: Math.round(cenok)+'/'+Math.round(cen),
-        amarillas: Math.round(am), rojas: Math.round(ro)
+        amarillas: am, rojas: ro,
+        _raw: { pases, pasesok, duelos, duelosg, aereos, aereosg }
       });
     }
     return base;
@@ -2570,6 +2622,12 @@ async function guardarWyscout(btn){
   const editId = document.getElementById('edit-id').value;
   if (editId==='' || !_wyscoutStats){ showToast('⚠️ Abrí un jugador y subí su Excel primero'); return; }
   btn.disabled = true; btn.textContent = 'Guardando…';
+  // conservar los ajustes manuales que ya tenía cada temporada
+  const previo = (_adminPlayersCache.find(x => String(x.id) === String(editId)) || {}).stats;
+  if (Array.isArray(previo)) _wyscoutStats.temporadas.forEach(t => {
+    const ant = previo.find(a => a && String(a.temporada) === String(t.temporada));
+    if (ant && ant.extra) t.extra = ant.extra;
+  });
   const payload = {
     stats: _wyscoutStats.temporadas,
     stats_source: 'wyscout',
@@ -2581,8 +2639,55 @@ async function guardarWyscout(btn){
   if (error){ console.error(error); showToast('❌ Error al guardar: '+error.message); btn.disabled=false; btn.textContent='💾 Guardar estas estadísticas'; return; }
   document.getElementById('f-posicion').value = _wyscoutStats.posicion_es;
   showToast('✅ Stats de Wyscout guardadas (pisaron API-Football)');
+  const guardadas = _wyscoutStats.temporadas;
   _wyscoutStats = null;
   document.getElementById('wyscout-preview').innerHTML = '<div style="color:var(--accent-light);font-size:12px;">✓ Guardado. Recargá la ficha para verlo.</div>';
+  await renderAdminPlayers();
+  renderAjusteManual(guardadas);
+}
+
+// ─── AJUSTE MANUAL POR TEMPORADA (torneos que el Excel de Wyscout no trae) ───
+let _ajusteStats = null;
+function renderAjusteManual(stats){
+  const el = document.getElementById('ajuste-manual');
+  if (!el) return;
+  const lista = Array.isArray(stats) ? stats.filter(s => s && s.partidos !== undefined && s.temporada) : [];
+  if (!lista.length || !lista.every(esWyscout)){ _ajusteStats = null; el.innerHTML = ''; return; }
+  _ajusteStats = JSON.parse(JSON.stringify(stats));
+  const inp = (i,k,v,ph,w) => `<input type="${k==='nota'?'text':'number'}" ${k==='nota'?'':'min="0"'} class="form-input" data-aj="${i}:${k}" value="${v??''}" placeholder="${ph}" style="width:${w};padding:6px 8px;font-size:12px;">`;
+  el.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;">
+      <div style="font-size:13px;font-weight:700;margin-bottom:2px;">➕ Ajuste manual por temporada</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px;">Para sumar partidos, goles y asistencias de torneos que el Excel no trae (ej: Copa Uruguay). Se suman a lo del Excel y se conservan al subir un Excel nuevo.</div>
+      ${_ajusteStats.map((s,i) => {
+        if (!s || s.partidos === undefined || !s.temporada) return '';
+        const e = s.extra || {};
+        return `<div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:8px;">
+          <div style="width:100%;font-size:11px;color:var(--muted);"><b style="color:var(--text);">${s.temporada_label || s.temporada}</b> · Excel: ${s.partidos} PJ${s.goles!==undefined ? ' / '+s.goles+' G / '+(s.asistencias||0)+' A' : ''}</div>
+          ${inp(i,'partidos',e.partidos,'+ PJ','72px')}${inp(i,'goles',e.goles,'+ Goles','80px')}${inp(i,'asistencias',e.asistencias,'+ Asist','80px')}${inp(i,'nota',(e.nota||'').replace(/"/g,'&quot;'),'Torneo (ej: Copa Uruguay)','190px')}
+        </div>`;
+      }).join('')}
+      <button type="button" class="btn-primary" style="margin-top:4px;" onclick="guardarAjusteManual(this)">💾 Guardar ajustes</button>
+    </div>`;
+}
+
+async function guardarAjusteManual(btn){
+  const editId = document.getElementById('edit-id').value;
+  if (editId==='' || !_ajusteStats){ showToast('⚠️ Abrí un jugador primero'); return; }
+  const extras = {};
+  document.querySelectorAll('#ajuste-manual [data-aj]').forEach(inp => {
+    const [i,k] = inp.dataset.aj.split(':');
+    (extras[i] = extras[i] || {})[k] = k==='nota' ? inp.value.trim() : Math.max(0, parseInt(inp.value) || 0);
+  });
+  Object.keys(extras).forEach(i => {
+    const e = extras[i];
+    if (e.partidos || e.goles || e.asistencias) _ajusteStats[i].extra = e; else delete _ajusteStats[i].extra;
+  });
+  btn.disabled = true; btn.textContent = 'Guardando…';
+  const { error } = await sb.from('players').update({ stats: _ajusteStats, stats_updated_at: new Date().toISOString() }).eq('id', editId);
+  btn.disabled = false; btn.textContent = '💾 Guardar ajustes';
+  if (error){ console.error(error); showToast('❌ Error al guardar: '+error.message); return; }
+  showToast('✅ Ajustes guardados');
   await renderAdminPlayers();
 }
 
@@ -2638,6 +2743,7 @@ function editPlayer(idx) {
   document.getElementById('f-source').value = p.statsSource || '';
   document.getElementById('f-fotmob').value = p.fotmobId || '';
   document.getElementById('edit-id').value = p.id;
+  renderAjusteManual(p.stats);
   document.getElementById('cancel-edit-btn').style.display = 'block';
   switchAdminTab('agregar', document.querySelectorAll('.tab')[0]);
   window.scrollTo(0, 0);
@@ -2746,7 +2852,7 @@ async function renderAdminPlayers() {
     <div class="admin-player-item">
       <div>
         <div class="admin-player-name">${p.nombre} ${p.apiFootballId ? '<span style="color:var(--success);font-size:11px;">🔗 API</span>' : ''}</div>
-        <div class="admin-player-meta">${p.posicion || ''} · ${p.club || ''}${p.stats ? (()=>{const s=Array.isArray(p.stats)?p.stats[0]:p.stats; return s ? ' · ' + (s.partidos || 0) + ' PJ / ' + (s.goles || 0) + ' G / ' + (s.asistencias || 0) + ' A' : '';})() : ''}</div>
+        <div class="admin-player-meta">${p.posicion || ''} · ${p.club || ''}${p.stats ? (()=>{const s=Array.isArray(p.stats)?p.stats[0]:p.stats; s=conExtra(s); return s ? ' · ' + (s.partidos || 0) + ' PJ / ' + (s.goles || 0) + ' G / ' + (s.asistencias || 0) + ' A' : '';})() : ''}</div>
       </div>
       <div class="admin-btn-group">
         <button class="btn-edit" onclick="editPlayer(${i})">✏️ Editar</button>
